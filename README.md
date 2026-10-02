@@ -1,5 +1,7 @@
 # dsh-plugin-cad
 
+**简体中文** | [English](./README.md)
+
 A [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/) plugin that lets an
 agent **operate a running AutoCAD session**: read layers and entities, draw, dimension, hatch,
 modify, and save DWG — without installing anything inside AutoCAD.
@@ -114,8 +116,9 @@ node --test --experimental-strip-types test/com-live.test.ts
 node --test --experimental-strip-types test/*.test.ts
 ```
 
-The offline suite is 31 passing tests (unit conversion, simulation transport, tool wiring, bundle).
-The 4 live tests require a running, licensed AutoCAD.
+The full suite is 38 passing tests; 5 of them drive a real, licensed AutoCAD and the rest run
+offline against the simulation transport.
+
 ## Notes from real-CAD bring-up
 
 These were all found by running against AutoCAD 2026 and are worth knowing before editing the bridge:
@@ -158,6 +161,15 @@ pnpm test
 `prepare` runs `tsdown`, so `dsh plugin add github:you/dsh-plugin-cad` works without a monorepo
 checkout. Add `allowBuilds: { dsh-plugin-cad: true }` to the profile''s `pnpm-workspace.yaml` to
 authorise that build step on first install.
+
+## Known limitations
+
+- `cad_draw`'s `undoLabel` is accepted but not applied (see above).
+- COM automation is **silent**: nothing in the AutoCAD UI indicates the plugin is connected (no status
+  bar or ribbon entry). Call `cad_status` to confirm the connection.
+- The plugin is good at creating and modifying geometry from explicit parameters, but it is not a
+  tool for reverse-engineering complex freeform outlines from a raster image (tangent fillets,
+  blended edges). For that, use AutoCAD's native image tracing instead.
 
 ## Licence
 
