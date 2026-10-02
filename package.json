@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-cad",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness plugin that drives a running AutoCAD session: read layers and entities, draw, dimension, hatch, modify, and save DWG.",
   "license": "MIT",
   "type": "module",
