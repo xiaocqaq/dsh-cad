@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+lib/
+*.tsbuildinfo
+
+# AutoCAD lock/sidecar files — transient, never part of a source tree
+*.dwl
+*.dwl2
+*.bak
+*.autosave
+
+# Local scratch files from bring-up and debugging
+_*.log
+_*.json
+_*.ps1
+_*.txt
+_acad-backup-*/
+part-replica.dwg
+
+# Reference material kept local (large, not ours to redistribute)
+Codex+For+CAD*.pdf
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Credentials — never commit
+.env
+.env.*
+*.pem

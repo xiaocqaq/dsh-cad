@@ -1,0 +1,24 @@
+# Installed by: dsh plugin --profile <name> add dsh-plugin-cad
+#
+# Plugin rows reference the package by name (not a relative source path) so
+# Node module resolution finds the installed build under the profile.
+- insert:
+    - id: cad
+      name: 'dsh-plugin-cad'
+      config:
+        # AutoCAD COM ProgID. 25.x covers AutoCAD 2021-2026; the bridge probes
+        # the versioned ProgIDs in `progIdFallbacks` when this one misses.
+        progId: 'AutoCAD.Application'
+        progIdFallbacks:
+          - 'AutoCAD.Application.25.2'
+          - 'AutoCAD.Application.25.1'
+          - 'AutoCAD.Application.25.0'
+          - 'AutoCAD.Application.24.3'
+        # Drawing units per metre. 1 for a metre-based drawing, 1000 for a
+        # millimetre-based drawing. All tool inputs are metres.
+        unitsPerMeter: 1
+        # Hard ceiling on one bridge round-trip, in milliseconds.
+        requestTimeoutMs: 120000
+        # 'simulation' keeps every tool callable without AutoCAD installed,
+        # for wiring checks, CI and prompt rehearsal.
+        transport: 'com'
