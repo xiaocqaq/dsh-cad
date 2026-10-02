@@ -37,6 +37,21 @@ export function createStatusTool(deps: ToolDeps): ToolDefinition {
               activeSpace: { type: 'string' },
             },
           },
+          bridge: {
+            type: 'object',
+            additionalProperties: false,
+            description:
+              '桥接进程诊断(仅 COM 后端):运行中的子进程实际加载的脚本路径与版本。' +
+              '插件升级后若此版本仍是旧的,说明桥接进程尚未重启。',
+            properties: {
+              script: { type: 'string', description: '桥接脚本的绝对路径' },
+              loadedAt: {
+                type: 'string',
+                description: '运行中进程载入的脚本版本(脚本文件修改时间,ISO 8601);未运行时为空',
+              },
+              running: { type: 'boolean', description: '桥接子进程是否存活' },
+            },
+          },
           message: { type: 'string', description: '未连接或出错时的说明' },
         },
       },
@@ -58,16 +73,32 @@ export function createStatusTool(deps: ToolDeps): ToolDefinition {
             `活动空间: ${d.activeSpace === 'paper' ? '图纸空间' : '模型空间'}`,
           )
         }
+        const b = value.bridge
+        if (b?.script) {
+          lines.push(
+            `桥接脚本: ${b.script}`,
+            `桥接版本: ${b.loadedAt || '(未运行)'}${b.running ? '' : ' [进程未运行]'}`,
+          )
+        }
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
     async execute() {
+      // Diagnostics are available even when the backend is down — that is
+      // exactly when knowing which script failed to start matters.
+      const diag = deps.cad.describeBackend()
+      const bridge = {
+        script: String(diag.bridgeScript ?? ''),
+        loadedAt: diag.bridgeLoadedAt ? String(diag.bridgeLoadedAt) : '',
+        running: Boolean(diag.bridgeRunning),
+      }
       const res = await deps.cad.raw({ op: 'status' })
       if (!res.ok) {
         return {
           backend: deps.cad.backend,
           connected: false,
           unitsPerMeter: deps.unitsPerMeter,
+          bridge,
           message: res.error.message,
         }
       }
@@ -86,6 +117,7 @@ export function createStatusTool(deps: ToolDeps): ToolDefinition {
         connected: true,
         unitsPerMeter: deps.unitsPerMeter,
         document,
+        bridge,
       }
     },
   })

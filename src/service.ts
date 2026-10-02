@@ -48,6 +48,14 @@ export class CadService {
     return this.transport.send(request)
   }
 
+  /**
+   * Backend-specific diagnostics for `cad_status`; `{}` when the transport has
+   * none to report, so callers never have to branch on the backend kind.
+   */
+  describeBackend(): Record<string, unknown> {
+    return this.transport.describeBackend?.() ?? {}
+  }
+
   /** Convert a tool-level point (metres) into a protocol point (drawing units). */
   private p(p: Point): Point {
     return this.units.pointToDrawing(p)

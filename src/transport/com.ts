@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,6 +22,13 @@ interface Pending {
   timer: NodeJS.Timeout
 }
 
+/** Identity of the bridge script on disk, used to detect a plugin upgrade. */
+interface ScriptStamp {
+  path: string
+  mtimeMs: number
+  size: number
+}
+
 const BRIDGE_RELATIVE = join('assets', 'cad-bridge.ps1')
 
 /**
@@ -42,6 +49,8 @@ export class ComTransport implements CadTransport {
   private seq = 0
   private stopped = false
   private readonly options: ComTransportOptions
+  /** Stamp of the bridge script the live child loaded; null while none runs. */
+  private loadedStamp: ScriptStamp | null = null
 
   constructor(options: ComTransportOptions) {
     this.options = options
@@ -64,6 +73,59 @@ export class ComTransport implements CadTransport {
     return candidates[1]!
   }
 
+  private stampOf(script: string): ScriptStamp | null {
+    try {
+      const s = statSync(script)
+      return { path: script, mtimeMs: s.mtimeMs, size: s.size }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Restart the child when the bridge script on disk has changed.
+   *
+   * Windows PowerShell reads the whole script into memory at startup and never
+   * re-reads it, so a plugin upgrade would otherwise keep executing the old
+   * bridge for as long as the process lives. That failure is silent and is
+   * indistinguishable from the new code being broken. One `statSync` per
+   * request is cheap, and restarting here makes an upgrade take effect without
+   * restarting the host.
+   */
+  private restartIfScriptChanged(): void {
+    const child = this.child
+    const loaded = this.loadedStamp
+    if (!child || !loaded) return
+    // Never tear down a process with work in flight; the next call re-checks.
+    if (this.pending.size > 0) return
+    const current = this.stampOf(this.resolveScript())
+    if (!current) return
+    if (
+      current.path === loaded.path &&
+      current.mtimeMs === loaded.mtimeMs &&
+      current.size === loaded.size
+    ) {
+      return
+    }
+    this.loadedStamp = null
+    this.child = null
+    this.ready = null
+    // The exit handler clears the remaining state and fails nothing, because
+    // `pending` is empty by the guard above.
+    if (child.exitCode === null) child.kill()
+  }
+
+  /** Diagnostics surfaced by `cad_status`. */
+  describeBackend(): Record<string, unknown> {
+    return {
+      bridgeScript: this.resolveScript(),
+      // The script's mtime is the version the live child is running, which is
+      // what a stale-process diagnosis needs to compare against the package.
+      bridgeLoadedAt: this.loadedStamp ? new Date(this.loadedStamp.mtimeMs).toISOString() : null,
+      bridgeRunning: this.child !== null && this.child.exitCode === null,
+    }
+  }
+
   async start(): Promise<void> {
     if (this.ready) return this.ready
     this.stopped = false
@@ -74,11 +136,13 @@ export class ComTransport implements CadTransport {
   private spawnBridge(): Promise<void> {
     return new Promise((resolve, reject) => {
       const ps = this.options.powershell ?? 'powershell.exe'
+      const script = this.resolveScript()
+      this.loadedStamp = this.stampOf(script)
       const args = [
         '-NoProfile',
         '-NonInteractive',
         '-ExecutionPolicy', 'Bypass',
-        '-File', this.resolveScript(),
+        '-File', script,
         '-ProgId', this.options.progId,
         '-ProgIdFallbacks', this.options.progIdFallbacks.join(','),
       ]
@@ -139,13 +203,19 @@ export class ComTransport implements CadTransport {
         const err = new Error(
           `CAD 桥接进程已退出 (code=${code ?? 'null'})。${stderr ? `\n${stderr}` : ''}`,
         )
-        this.child = null
-        this.ready = null
-        // Fail every in-flight request instead of leaving callers hanging.
-        for (const [id, p] of this.pending) {
-          clearTimeout(p.timer)
-          this.pending.delete(id)
-          p.resolve({ ok: false, error: { code: 'NOT_CONNECTED', message: err.message } })
+        // A restart can replace this child before its exit is delivered, and the
+        // old process must not then clear the new one's state or fail its
+        // in-flight requests.
+        if (this.child === child) {
+          this.child = null
+          this.ready = null
+          this.loadedStamp = null
+          // Fail every in-flight request instead of leaving callers hanging.
+          for (const [id, p] of this.pending) {
+            clearTimeout(p.timer)
+            this.pending.delete(id)
+            p.resolve({ ok: false, error: { code: 'NOT_CONNECTED', message: err.message } })
+          }
         }
         if (!settled) {
           settled = true
@@ -160,6 +230,7 @@ export class ComTransport implements CadTransport {
       return { ok: false, error: { code: 'NOT_CONNECTED', message: '桥接已停止' } }
     }
     try {
+      this.restartIfScriptChanged()
       await this.start()
     } catch (err) {
       return {
@@ -198,6 +269,15 @@ export class ComTransport implements CadTransport {
     const child = this.child
     this.child = null
     this.ready = null
+    this.loadedStamp = null
+    // Detaching the child here means its exit handler no longer owns `pending`,
+    // so fail the in-flight requests explicitly rather than leaving them to time
+    // out.
+    for (const [id, p] of this.pending) {
+      clearTimeout(p.timer)
+      this.pending.delete(id)
+      p.resolve({ ok: false, error: { code: 'NOT_CONNECTED', message: '桥接已停止' } })
+    }
     if (!child || child.exitCode !== null) return
     await new Promise<void>((resolve) => {
       child.once('exit', () => resolve())

@@ -686,8 +686,23 @@ function Invoke-AddHatch($Doc, $Req) {
       }
       if ($null -eq $hatch) { throw 'AutoCAD 未生成填充对象(命令可能被取消)' }
 
+      # SendCommand only queues the command, so -HATCH is still running at the
+      # moment the hatch first becomes enumerable. Two things go wrong then:
+      # deleting the construction boundaries can take the hatch down with
+      # them, and COM can transiently fail to enumerate an entity a running
+      # command just created. Wait for AutoCAD to go idle first.
+      for ($i = 0; $i -lt 60; $i++) {
+        Start-Sleep -Milliseconds 100
+        $busy = 0
+        try { $busy = [int]$script:Doc.GetVariable('CMDACTIVE') } catch { break }
+        if ($busy -eq 0) { break }
+      }
+
       Set-Common $hatch $layer $color | Out-Null
       $hatch.Evaluate()
+      # Read the handle while the object is certainly alive; deleting the
+      # boundaries below could take an associative hatch with them.
+      $hatchHandle = [string]$hatch.Handle
     } finally {
       try { $script:Doc.SetVariable('HPNAME', $prevName) } catch { }
       try { $script:Doc.SetVariable('HPSCALE', $prevScale) } catch { }
@@ -699,7 +714,18 @@ function Invoke-AddHatch($Doc, $Req) {
       try { $boundary.Delete() | Out-Null }
       catch { $warnings += '临时填充边界清理失败,已保留该边界对象' }
     }
-    return New-Ok ([ordered]@{ count = 1 }) @([string]$hatch.Handle) $warnings
+
+    # The caller resolves this handle on a later request, so it has to resolve
+    # here too. COM can transiently miss an entity a command just created, so
+    # retry before declaring failure rather than handing back a dead handle.
+    $alive = $null
+    for ($i = 0; $i -lt 30 -and $null -eq $alive; $i++) {
+      $alive = Find-Entity $hatchHandle
+      if ($null -eq $alive) { Start-Sleep -Milliseconds 100 }
+    }
+    if ($null -eq $alive) { throw "填充对象创建后无法再次定位(句柄 $hatchHandle)" }
+
+    return New-Ok ([ordered]@{ count = 1 }) @($hatchHandle) $warnings
   } catch {
     # AddHatch/the command inserts entities before later steps can fail. Roll
     # back the hatch and every temporary boundary so failures are atomic.

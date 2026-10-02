@@ -294,6 +294,14 @@ export interface CadTransport {
   send(request: CadRequest): Promise<CadResponse>
   /** Release the backend. Must be idempotent. */
   stop(): Promise<void>
+  /**
+   * Optional backend-specific diagnostics for `cad_status`.
+   *
+   * Transports that hold external state (a child process, a loaded script) use
+   * this to expose which version of that state is live, which is what makes a
+   * stale-process diagnosis possible without guessing.
+   */
+  describeBackend?(): Record<string, unknown>
 }
 
 
