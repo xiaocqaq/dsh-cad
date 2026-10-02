@@ -19,6 +19,5 @@
         unitsPerMeter: 1
         # Hard ceiling on one bridge round-trip, in milliseconds.
         requestTimeoutMs: 120000
-        # 'simulation' keeps every tool callable without AutoCAD installed,
-        # for wiring checks, CI and prompt rehearsal.
-        transport: 'com'
+        # auto prefers File IPC and falls back to COM. simulation needs no AutoCAD.
+        transport: 'auto'
