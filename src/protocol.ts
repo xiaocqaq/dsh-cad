@@ -171,7 +171,10 @@ export interface DrawRequest {
 export interface AddDimensionRequest {
   op: 'addDimension'
   kind: 'linear' | 'aligned' | 'angular' | 'radius' | 'diameter'
-  /** Two points for linear/aligned/angular, one for radius/diameter. */
+  /**
+   * Linear/aligned: extension points; angular: vertex + two ray endpoints;
+   * radius: center + point on circle; diameter: opposite points on diameter.
+   */
   points: Point[]
   /** Dimension line offset from the measured points, in drawing units. */
   offset?: number

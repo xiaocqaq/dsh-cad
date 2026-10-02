@@ -3,8 +3,9 @@
   stdio bridge between the dsh-plugin-cad Node transport and a running AutoCAD.
 
 .DESCRIPTION
-  Reads one JSON request per line from stdin, performs it against the AutoCAD
-  COM automation server, and writes one JSON response per line to stdout.
+  Reads JSON requests from stdin, accepting either one-line or pretty-printed
+  multi-line documents, performs them against the AutoCAD COM automation server,
+  and writes one JSON response per request to stdout.
 
   AutoCAD is attached to, never launched, when it is already running; otherwise
   the script starts a visible instance so the engineer can see what the agent
@@ -64,6 +65,12 @@ function Convert-Point($P) {
   if ($P.PSObject.Properties.Name -contains 'x') { $v[0] = [double]$P.x }
   if ($P.PSObject.Properties.Name -contains 'y') { $v[1] = [double]$P.y }
   if (($P.PSObject.Properties.Name -contains 'z') -and ($null -ne $P.z)) { $v[2] = [double]$P.z }
+  return ,$v
+}
+
+function New-ComPoint([double] $X, [double] $Y, [double] $Z = 0.0) {
+  $v = New-Object double[] 3
+  $v[0] = $X; $v[1] = $Y; $v[2] = $Z
   return ,$v
 }
 
@@ -127,22 +134,25 @@ function Get-EntityKind($Ent) {
   # ObjectName looks like "AcDbLine", "AcDbCircle", "AcDbText", ...
   $n = $Ent.ObjectName
   if (-not $n) { return 'unknown' }
+  # AutoCAD returns concrete derived class names ("AcDbRotatedDimension",
+  # "AcDbAlignedDimension", "AcDb2LineAngularDimension", ...), so the
+  # dimension/hatch/polyline families must match on prefix, not equality.
   switch -Regex ($n) {
-    '^AcDbLine$'           { return 'line' }
-    '^AcDbCircle$'         { return 'circle' }
-    '^AcDbArc$'            { return 'arc' }
-    '^AcDb2dPolyline$'     { return 'polyline' }
-    '^AcDb3dPolyline$'     { return 'polyline' }
-    '^AcDbPolyline$'       { return 'polyline' }
-    '^AcDbText$'           { return 'text' }
-    '^AcDbMText$'          { return 'mtext' }
-    '^AcDbDimension$'      { return 'dimension' }
-    '^AcDbHatch$'          { return 'hatch' }
-    '^AcDbPoint$'          { return 'point' }
-    '^AcDbEllipse$'        { return 'ellipse' }
-    '^AcDbSpline$'         { return 'spline' }
-    '^AcDbBlockReference$' { return 'block' }
-    default                { return 'unknown' }
+    '^AcDbLine$'             { return 'line' }
+    '^AcDbCircle$'           { return 'circle' }
+    '^AcDbArc$'              { return 'arc' }
+    '^AcDb2dPolyline$'       { return 'polyline' }
+    '^AcDb3dPolyline$'       { return 'polyline' }
+    '^AcDbPolyline$'         { return 'polyline' }
+    '^AcDbText$'             { return 'text' }
+    '^AcDbMText$'            { return 'mtext' }
+    '^AcDb[A-Za-z]*Dimension$' { return 'dimension' }
+    '^AcDb[A-Za-z]*Hatch$'   { return 'hatch' }
+    '^AcDbPoint$'            { return 'point' }
+    '^AcDbEllipse$'          { return 'ellipse' }
+    '^AcDbSpline$'           { return 'spline' }
+    '^AcDbBlockReference$'   { return 'block' }
+    default                  { return 'unknown' }
   }
 }
 
@@ -280,8 +290,34 @@ function Invoke-Open($App, $Req) {
     return New-Err 'NOT_FOUND' "文件不存在: $path"
   }
   $full = (Resolve-Path -LiteralPath $path).Path
+
+  # Reuse an already-open document. Re-opening the active DWG is rejected by
+  # AutoCAD, and setting ActiveDocument through a pipeline assigns $null.
+  foreach ($candidate in $App.Documents) {
+    try {
+      $candidatePath = [string]$candidate.FullName
+      if ($candidatePath -and [string]::Equals(
+        [System.IO.Path]::GetFullPath($candidatePath),
+        [System.IO.Path]::GetFullPath($full),
+        [System.StringComparison]::OrdinalIgnoreCase)) {
+        $candidate.Activate()
+        $script:Doc = $candidate
+        Get-Space
+        $space = $script:SPC
+        return New-Ok ([ordered]@{
+          name            = [string]$candidate.Name
+          path            = [string]$candidate.FullName
+          modelSpaceCount = [int]$space.Count
+        })
+      }
+    } catch {
+      # An unsaved or transient document can have no usable FullName; keep opening.
+    }
+  }
+
   $doc = $App.Documents.Open($full)
-  $App.ActiveDocument = $doc | Out-Null
+  $doc.Activate()
+  $script:Doc = $doc
   Get-Space
   $space = $script:SPC
   return New-Ok ([ordered]@{
@@ -456,9 +492,31 @@ function Invoke-AddDimension($Doc, $Req) {
   Get-Space
   $space = $script:SPC
   $names = @($Req.PSObject.Properties.Name)
-  $pts = @()
-  foreach ($p in $Req.points) { $pts += (Convert-Point $p) }
   $kind = [string]$Req.kind
+  if ($kind -notin @('linear', 'aligned', 'angular', 'radius', 'diameter')) {
+    return New-Err 'UNSUPPORTED' "不支持的标注类型: $kind"
+  }
+
+  $inputPoints = @($Req.points)
+  $expected = 2
+  if ($kind -eq 'angular') { $expected = 3 }
+  if ($inputPoints.Count -ne $expected) {
+    if ($kind -eq 'angular') {
+      return New-Err 'INVALID_ARGUMENT' '角度标注需要 3 个点(顶点和两条射线端点)'
+    }
+    if ($kind -eq 'radius') {
+      return New-Err 'INVALID_ARGUMENT' '半径标注需要 2 个点(圆心和圆周点)'
+    }
+    if ($kind -eq 'diameter') {
+      return New-Err 'INVALID_ARGUMENT' '直径标注需要 2 个点(直径两端)'
+    }
+    return New-Err 'INVALID_ARGUMENT' '线性/对齐标注需要 2 个点'
+  }
+
+  $pts = New-Object object[] $inputPoints.Count
+  for ($i = 0; $i -lt $inputPoints.Count; $i++) {
+    $pts[$i] = Convert-Point $inputPoints[$i]
+  }
 
   $offset = 0.0
   if ($names -contains 'offset' -and $null -ne $Req.offset) { $offset = [double]$Req.offset }
@@ -468,34 +526,85 @@ function Invoke-AddDimension($Doc, $Req) {
   if ($names -contains 'color' -and $null -ne $Req.color) { $color = [int]$Req.color }
 
   $ent = $null
-  switch ($kind) {
-    'aligned' {
-      if ($pts.Count -lt 2) { return New-Err 'INVALID_ARGUMENT' '对齐标注需要至少 2 个点' }
-      $p1 = $pts[0]; $p2 = $pts[1]
-      if ($offset -ne 0.0) { $p2 = [double[]]@($p2[0], $p2[1] + $offset, $p2[2]) }
-      $ent = $space.AddDimAligned($p1, $p2)
+  try {
+    switch ($kind) {
+      'aligned' {
+        $p1 = $pts[0]; $p2 = $pts[1]
+        $dx = [double]$p2[0] - [double]$p1[0]
+        $dy = [double]$p2[1] - [double]$p1[1]
+        $length = [Math]::Sqrt($dx * $dx + $dy * $dy)
+        if ($length -le 1e-12) { throw '对齐标注的两点不能重合' }
+        $nx = -$dy / $length; $ny = $dx / $length
+        $dimPoint = New-ComPoint (([double]$p1[0] + [double]$p2[0]) / 2.0 + $nx * $offset) (([double]$p1[1] + [double]$p2[1]) / 2.0 + $ny * $offset)
+        # AddDimAligned(point1, point2, textPosition).
+        $ent = $space.AddDimAligned($p1, $p2, $dimPoint)
+      }
+      'linear' {
+        $p1 = $pts[0]; $p2 = $pts[1]
+        $dx = [double]$p2[0] - [double]$p1[0]
+        $dy = [double]$p2[1] - [double]$p1[1]
+        $length = [Math]::Sqrt($dx * $dx + $dy * $dy)
+        if ($length -le 1e-12) { throw '线性标注的两点不能重合' }
+        $nx = -$dy / $length; $ny = $dx / $length
+        $dimPoint = New-ComPoint (([double]$p1[0] + [double]$p2[0]) / 2.0 + $nx * $offset) (([double]$p1[1] + [double]$p2[1]) / 2.0 + $ny * $offset)
+        $rotation = [Math]::Atan2($dy, $dx)
+        # AddDimRotated(point1, point2, dimensionLineLocation, rotation).
+        $ent = $space.AddDimRotated($p1, $p2, $dimPoint, $rotation)
+      }
+      'angular' {
+        $vertex = $pts[0]; $first = $pts[1]; $second = $pts[2]
+        $ax = [double]$first[0] - [double]$vertex[0]
+        $ay = [double]$first[1] - [double]$vertex[1]
+        $bx = [double]$second[0] - [double]$vertex[0]
+        $by = [double]$second[1] - [double]$vertex[1]
+        $ra = [Math]::Sqrt($ax * $ax + $ay * $ay)
+        $rb = [Math]::Sqrt($bx * $bx + $by * $by)
+        if ($ra -le 1e-12 -or $rb -le 1e-12) { throw '角度标注的射线端点不能与顶点重合' }
+        $bisX = $ax / $ra + $bx / $rb
+        $bisY = $ay / $ra + $by / $rb
+        $bisLength = [Math]::Sqrt($bisX * $bisX + $bisY * $bisY)
+        if ($bisLength -le 1e-12) {
+          $bisX = -$ay / $ra; $bisY = $ax / $ra; $bisLength = 1.0
+        }
+        $textRadius = [Math]::Max(0.001, [Math]::Max($ra, $rb) + $offset)
+        $textPoint = New-ComPoint ([double]$vertex[0] + $bisX / $bisLength * $textRadius) ([double]$vertex[1] + $bisY / $bisLength * $textRadius)
+        # AddDimAngular(vertex, firstRayPoint, secondRayPoint, textPosition).
+        $ent = $space.AddDimAngular($vertex, $first, $second, $textPoint)
+      }
+      'radius' {
+        $center = $pts[0]; $edge = $pts[1]
+        $dx = [double]$edge[0] - [double]$center[0]
+        $dy = [double]$edge[1] - [double]$center[1]
+        $radius = [Math]::Sqrt($dx * $dx + $dy * $dy)
+        if ($radius -le 1e-12) { throw '半径标注的圆心和圆周点不能重合' }
+        $leader = [Math]::Abs($offset)
+        if ($leader -le 1e-12) { $leader = [Math]::Max(0.001, $radius * 0.25) }
+        $ent = $space.AddDimRadial($center, $edge, $leader)
+      }
+      'diameter' {
+        $p1 = $pts[0]; $p2 = $pts[1]
+        $dx = [double]$p2[0] - [double]$p1[0]
+        $dy = [double]$p2[1] - [double]$p1[1]
+        $diameter = [Math]::Sqrt($dx * $dx + $dy * $dy)
+        if ($diameter -le 1e-12) { throw '直径标注的两点不能重合' }
+        $leader = [Math]::Abs($offset)
+        if ($leader -le 1e-12) { $leader = [Math]::Max(0.001, $diameter * 0.125) }
+        $ent = $space.AddDimDiametric($p1, $p2, $leader)
+      }
     }
-    'linear' {
-      if ($pts.Count -lt 2) { return New-Err 'INVALID_ARGUMENT' '线性标注需要至少 2 个点' }
-      $p1 = $pts[0]; $p2 = $pts[1]
-      if ($offset -ne 0.0) { $p2 = [double[]]@($p2[0], $p2[1] + $offset, $p2[2]) }
-      $ent = $space.AddDimRotated($p1, $p2, 0.0)
-    }
-    'angular' {
-      if ($pts.Count -lt 3) { return New-Err 'INVALID_ARGUMENT' '角度标注需要 3 个点' }
-      $ent = $space.AddDimAngular($pts[0], $pts[1], $pts[2])
-    }
-    'radius'   { $ent = $space.AddDimRadius($pts[0]) }
-    'diameter' { $ent = $space.AddDimDiameter($pts[0]) }
-    default    { return New-Err 'UNSUPPORTED' "不支持的标注类型: $kind" }
-  }
 
-  if ($null -eq $ent) { return New-Err 'BACKEND_ERROR' "AutoCAD 未能创建该标注($kind)" }
-  Set-Common $ent $layer $color | Out-Null
-  if ($names -contains 'textOverride' -and $Req.textOverride) {
-    try { $ent.TextOverride = [string]$Req.textOverride } catch { }
+    if ($null -eq $ent) { throw "AutoCAD 未能创建该标注($kind)" }
+    Set-Common $ent $layer $color | Out-Null
+    if ($names -contains 'textOverride' -and $null -ne $Req.textOverride) {
+      $ent.TextOverride = [string]$Req.textOverride
+    }
+    return New-Ok ([ordered]@{ count = 1 }) @([string]$ent.Handle) $null
+  } catch {
+    # Dimension objects are inserted before some properties are assigned; remove
+    # the partial object so a failed call cannot leave an orphan in the drawing.
+    if ($null -ne $ent) { try { $ent.Delete() | Out-Null } catch { } }
+    return New-Err 'BACKEND_ERROR' ("添加尺寸标注失败: " + $_.Exception.Message)
   }
-  return New-Ok ([ordered]@{ count = 1 }) @([string]$ent.Handle) $null
 }
 
 function Invoke-AddHatch($Doc, $Req) {
@@ -504,32 +613,100 @@ function Invoke-AddHatch($Doc, $Req) {
   Get-Space
   $space = $script:SPC
   $names = @($Req.PSObject.Properties.Name)
+  $loops = @($Req.loops)
+  if ($loops.Count -eq 0) { return New-Err 'INVALID_ARGUMENT' '填充至少需要一个闭合边界环' }
+
   $pattern = 'ANSI31'
   if ($names -contains 'patternName' -and $Req.patternName) { $pattern = [string]$Req.patternName }
-
-  # 0 = acHatchPatternTypePreDefined
-  $hatch = $space.AddHatch(0, $pattern, $false, 0)
-  $warnings = @()
-  $isOuter = $true
-  foreach ($loop in $Req.loops) {
-    $flat = New-Object System.Collections.Generic.List[double]
-    foreach ($p in $loop) {
-      $cp = Convert-Point $p
-      $flat.Add($cp[0]); $flat.Add($cp[1])
-    }
-    if ($flat.Count -lt 6) { $warnings += '顶点不足 3 个的填充环已跳过'; continue }
-    # Closed ring: repeat the first vertex at the end.
-    $flat.Add($flat[0]); $flat.Add($flat[1])
-    $hatch.AddLineEdge($flat.ToArray(), $(if ($isOuter) { 0 } else { 1 })) | Out-Null
-    $isOuter = $false
-  }
-
   $layer = $null
   if ($names -contains 'layer' -and $Req.layer) { $layer = [string]$Req.layer }
   $color = $null
   if ($names -contains 'color' -and $null -ne $Req.color) { $color = [int]$Req.color }
-  Set-Common $hatch $layer $color | Out-Null
-  return New-Ok ([ordered]@{ count = 1 }) @([string]$hatch.Handle) $warnings
+  $warnings = @()
+  $hatch = $null
+  $boundaries = @()
+
+  # AutoCAD 2026 rejects Hatch.AppendOuterLoop / AppendInnerLoop for every
+  # VARIANT array shape PowerShell (or a C# helper) can build - the COM server
+  # answers "对象数组无效" even on a hatch AutoCAD itself created. The loop API
+  # is therefore unusable from COM here. Instead draw the boundaries as real
+  # closed polylines and let AutoCAD build the hatch from them through its own
+  # -HATCH command, which is the same code path the UI uses.
+  $before = @{}
+  foreach ($ent in $space) { $before[[string]$ent.Handle] = $true }
+
+  try {
+    $isOuter = $true
+    $boundaryHandles = @()
+    foreach ($loop in $loops) {
+      $vertices = @($loop)
+      if ($vertices.Count -lt 3) { throw '填充边界环至少需要 3 个顶点' }
+      $flat = New-Object System.Collections.Generic.List[double]
+      foreach ($p in $vertices) {
+        $cp = Convert-Point $p
+        $flat.Add($cp[0]); $flat.Add($cp[1])
+      }
+      $poly = $space.AddLightWeightPolyline($flat.ToArray())
+      $poly.Closed = $true
+      $boundaries += $poly
+      $boundaryHandles += [string]$poly.Handle
+      $isOuter = $false
+    }
+
+    # -HATCH always builds the pattern from the HPNAME/HPSCALE system variables.
+    # Set them first instead of post-editing the hatch: assigning PatternName on
+    # an existing hatch raises "找不到名称为 PatternName 的属性(参数数量为 1)".
+    $prevName = [string]$script:Doc.GetVariable('HPNAME')
+    $prevScale = [double]$script:Doc.GetVariable('HPSCALE')
+    try {
+      $script:Doc.SetVariable('HPNAME', $pattern)
+      if ($names -contains 'patternScale' -and $null -ne $Req.patternScale -and $pattern.ToUpperInvariant() -ne 'SOLID') {
+        $scale = [double]$Req.patternScale
+        if ($scale -le 0) { throw '填充比例必须为正数' }
+        $script:Doc.SetVariable('HPSCALE', $scale)
+      }
+
+      # Feed every boundary of this call to -HATCH at once so interior loops land
+      # in the same hatch and AutoCAD resolves island nesting on its own.
+      $selection = '(ssadd)'
+      foreach ($h in $boundaryHandles) {
+        $selection = "(ssadd (handent `"$h`") $selection)"
+      }
+      $cmd = '(command "_.-HATCH" "_S" ' + $selection + ' "" "")'
+      $script:Doc.SendCommand($cmd + "`n")
+
+      # SendCommand is asynchronous: poll until the new hatch entity appears.
+      $hatch = $null
+      for ($i = 0; $i -lt 60 -and $null -eq $hatch; $i++) {
+        Start-Sleep -Milliseconds 100
+        foreach ($ent in $space) {
+          $handle = [string]$ent.Handle
+          if (-not $before.ContainsKey($handle) -and (Get-EntityKind $ent) -eq 'hatch') { $hatch = $ent; break }
+        }
+      }
+      if ($null -eq $hatch) { throw 'AutoCAD 未生成填充对象(命令可能被取消)' }
+
+      Set-Common $hatch $layer $color | Out-Null
+      $hatch.Evaluate()
+    } finally {
+      try { $script:Doc.SetVariable('HPNAME', $prevName) } catch { }
+      try { $script:Doc.SetVariable('HPSCALE', $prevScale) } catch { }
+    }
+
+    # The temporary construction polylines are not associative boundaries, so
+    # they are safe to remove once AutoCAD has consumed them.
+    foreach ($boundary in $boundaries) {
+      try { $boundary.Delete() | Out-Null }
+      catch { $warnings += '临时填充边界清理失败,已保留该边界对象' }
+    }
+    return New-Ok ([ordered]@{ count = 1 }) @([string]$hatch.Handle) $warnings
+  } catch {
+    # AddHatch/the command inserts entities before later steps can fail. Roll
+    # back the hatch and every temporary boundary so failures are atomic.
+    foreach ($boundary in $boundaries) { try { $boundary.Delete() | Out-Null } catch { } }
+    if ($null -ne $hatch) { try { $hatch.Delete() | Out-Null } catch { } }
+    return New-Err 'BACKEND_ERROR' ("添加填充失败: " + $_.Exception.Message)
+  }
 }
 function Invoke-Modify($Doc, $Req) {
   $ent = Find-Entity ([string]$Req.handle)
@@ -702,12 +879,14 @@ function Invoke-RunCommand($App, $Doc, $Req) {
 }
 
 function Invoke-Dispatch([string] $Op, $Req) {
-  # `status` also reports the active document, so resolve it for every op.
+  # Opening a file must work even when AutoCAD has no active document yet.
+  if ($Op -eq 'open') { return Invoke-Open $script:App $Req }
+
+  # `status` also reports the active document, so resolve it for every other op.
   $doc = Get-ActiveDoc $script:App
   $script:Doc = $doc
   switch ($Op) {
     'status'        { return Invoke-Status $script:App $doc }
-    'open'          { return Invoke-Open $script:App $Req }
     'saveAs'        { return Invoke-SaveAs $script:App $doc $Req }
     'listLayers'    { return Invoke-ListLayers $doc }
     'queryEntities' { return Invoke-QueryEntities $doc $Req }

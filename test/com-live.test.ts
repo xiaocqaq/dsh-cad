@@ -147,3 +147,82 @@ test('COM: 查询不存在的句柄返回 NOT_FOUND', opts, async () => {
     await transport.stop()
   }
 })
+
+test('COM: 真实创建并清理五种尺寸标注', opts, async () => {
+  const { transport } = makeService()
+  const handles: string[] = []
+  const cases = [
+    {
+      kind: 'linear' as const,
+      points: [{ x: 0, y: 100 }, { x: 100, y: 100 }],
+      offset: 20,
+    },
+    {
+      kind: 'aligned' as const,
+      points: [{ x: 0, y: 200 }, { x: 100, y: 250 }],
+      offset: 20,
+    },
+    {
+      kind: 'angular' as const,
+      points: [{ x: 300, y: 100 }, { x: 400, y: 100 }, { x: 300, y: 200 }],
+      offset: 20,
+    },
+    {
+      kind: 'radius' as const,
+      points: [{ x: 600, y: 100 }, { x: 650, y: 100 }],
+      offset: 20,
+    },
+    {
+      kind: 'diameter' as const,
+      points: [{ x: 700, y: 50 }, { x: 800, y: 50 }],
+      offset: 20,
+    },
+  ]
+
+  try {
+    for (const item of cases) {
+      const res = await transport.send({ op: 'addDimension', ...item })
+      assert.equal(res.ok, true, `${item.kind}: ${res.ok ? '' : JSON.stringify(res.error)}`)
+      if (res.ok) handles.push(...(res.handles ?? []))
+    }
+
+    assert.equal(handles.length, cases.length)
+    const queried = await transport.send({ op: 'queryEntities', kind: 'dimension' })
+    assert.equal(queried.ok, true, queried.ok ? '' : JSON.stringify(queried.error))
+    if (queried.ok) {
+      assert.ok((queried.data as { count: number }).count >= cases.length)
+    }
+  } finally {
+    if (handles.length > 0) await transport.send({ op: 'delete', handles })
+    await transport.stop()
+  }
+})
+
+test('COM: 真实创建并清理多环填充', opts, async () => {
+  const { transport } = makeService()
+  let handle = ''
+  try {
+    const res = await transport.send({
+      op: 'addHatch',
+      patternName: 'ANSI31',
+      patternScale: 10,
+      loops: [
+        [{ x: 0, y: 400 }, { x: 400, y: 400 }, { x: 400, y: 300 }, { x: 0, y: 300 }],
+        [{ x: 100, y: 375 }, { x: 100, y: 325 }, { x: 200, y: 325 }, { x: 200, y: 375 }],
+      ],
+    })
+    assert.equal(res.ok, true, res.ok ? '' : JSON.stringify(res.error))
+    if (res.ok) handle = res.handles?.[0] ?? ''
+    assert.ok(handle, '填充应返回句柄')
+
+    const entity = await transport.send({ op: 'getEntity', handle })
+    assert.equal(entity.ok, true, entity.ok ? '' : JSON.stringify(entity.error))
+    if (entity.ok) {
+      const measure = (entity.data as { entity: { measure?: { area?: number } } }).entity.measure
+      assert.ok(typeof measure?.area === 'number' && measure.area > 0, '填充应有正面积')
+    }
+  } finally {
+    if (handle) await transport.send({ op: 'delete', handles: [handle] })
+    await transport.stop()
+  }
+})

@@ -116,8 +116,8 @@ node --test --experimental-strip-types test/com-live.test.ts
 node --test --experimental-strip-types test/*.test.ts
 ```
 
-The full suite is 38 passing tests; 5 of them drive a real, licensed AutoCAD and the rest run
-offline against the simulation transport.
+The full suite is 43 tests; 7 of them drive a real, licensed AutoCAD and the rest run offline
+against the simulation transport.
 
 ## Notes from real-CAD bring-up
 
@@ -146,6 +146,23 @@ These were all found by running against AutoCAD 2026 and are worth knowing befor
 - `StartUndoMark` / `EndUndoMark` are absent from the automation `Document`, and `SendCommand`
   deadlocks when called from an automation client. `cad_draw`'s `undoLabel` is therefore accepted
   but **not** applied; each entity stays individually undoable with `U`.
+- **`Hatch.AppendOuterLoop` / `AppendInnerLoop` are unusable from COM on AutoCAD 2026.** Every
+  array shape a .NET client can hand over — `New-Object object[] 1`, `[object[]]::new(1)`,
+  `[Array]::CreateInstance`, `@($poly)`, `ArrayList`, a nested array, a bare COM object, `[ref]`,
+  `VariantWrapper`, an `IUnknown` round-trip, `InvokeMember`, and even a C# helper building the
+  array internally — is rejected with *「对象数组无效」*. The same call fails on a hatch AutoCAD
+  itself created with `BHATCH` (`NumberOfLoops=1`), and `InsertLoopAt` fails identically, so this
+  is a server-side limitation, not a marshaling mistake: the RCW wants an `AcadEntity[]` that only
+  the version-specific PIA can name. `cad_add_hatch` therefore draws real closed polylines and
+  drives AutoCAD's own `-HATCH` command through `SendCommand`, then deletes the construction
+  geometry. Two consequences worth remembering: the pattern must be set with the **`HPNAME` /
+  `HPSCALE` system variables before** the command runs (assigning `PatternName` to an existing
+  hatch throws *「找不到名称为 PatternName 的属性(参数数量为 1)」*), and each call costs a
+  100 ms-granularity poll while the command settles.
+- **Dimension kind detection must match derived class names.** AutoCAD reports
+  `AcDbRotatedDimension`, `AcDbAlignedDimension`, `AcDb2LineAngularDimension`,
+  `AcDbRadialDimension`, `AcDbDiametricDimension` — not the base `AcDbDimension` — so the
+  classifier matches the `^AcDb[A-Za-z]*Dimension$` family (likewise for hatch).
 - `assets/cad-bridge.ps1` must stay **UTF-8 with BOM**. Windows PowerShell 5.1 otherwise reads the
   Chinese strings as ANSI and fails to parse.
 

@@ -295,12 +295,23 @@ export class SimulatedDocument {
     const warnings: string[] = []
     const handle = this.nextHandle()
     this.ensureLayer(req.layer ?? '0')
-    if (req.kind === 'radius' || req.kind === 'diameter') {
-      if (req.points.length < 1) throw new Error('半径/直径标注需要至少 1 个点')
-    } else if (req.points.length < 2) {
-      throw new Error('线性/对齐/角度标注需要至少 2 个点')
+    const expected = req.kind === 'angular' ? 3 : 2
+    if (req.points.length !== expected) {
+      const detail = req.kind === 'angular'
+        ? '角度标注需要 3 个点(顶点和两条射线端点)'
+        : req.kind === 'radius'
+          ? '半径标注需要 2 个点(圆心和圆周点)'
+          : req.kind === 'diameter'
+            ? '直径标注需要 2 个点(直径两端)'
+            : '线性/对齐标注需要 2 个点'
+      throw new Error(detail)
     }
-    const span = req.points.length >= 2 ? dist(req.points[0]!, req.points[1]!) : 0
+    const span = dist(req.points[0]!, req.points[1]!)
+    const measure = req.kind === 'angular'
+      ? { angle: Math.atan2(req.points[2]!.y - req.points[0]!.y, req.points[2]!.x - req.points[0]!.x) - Math.atan2(req.points[1]!.y - req.points[0]!.y, req.points[1]!.x - req.points[0]!.x) }
+      : req.kind === 'radius'
+        ? { radius: span }
+        : { length: req.kind === 'diameter' ? span : span }
     this.entities.set(handle, {
       handle,
       kind: 'dimension',
@@ -309,13 +320,17 @@ export class SimulatedDocument {
       linetype: 'ByLayer',
       text: req.textOverride,
       points: req.points,
-      measure: req.kind === 'angular' ? { angle: span } : { length: span },
+      measure,
     })
     return { handle, warnings }
   }
 
   addHatch(req: AddHatchRequest): { handle: EntityHandle; warnings: string[] } {
     const warnings: string[] = []
+    if (req.loops.length === 0) throw new Error('填充至少需要一个闭合边界环')
+    for (const loop of req.loops) {
+      if (loop.length < 3) throw new Error('填充边界环至少需要 3 个顶点')
+    }
     const handle = this.nextHandle()
     this.ensureLayer(req.layer ?? '0')
     const area = req.loops.reduce((acc: number, loop: Point[]) => acc + ringArea(loop), 0)

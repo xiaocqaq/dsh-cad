@@ -22,8 +22,8 @@ part-replica.dwg
 # Reference material kept local (large, not ours to redistribute)
 Codex+For+CAD*.pdf
 
-# Editor / OS
-.vscode/
+# Codegraph local index
+.codegraph/
 .idea/
 .DS_Store
 Thumbs.db

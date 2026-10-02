@@ -12,7 +12,7 @@ export function createDimensionTool(deps: ToolDeps): ToolDefinition {
     description:
       '在图纸中添加尺寸标注对象(线性/对齐/角度/半径/直径)。' +
       '请使用真正的标注对象而不是手工画线,以保证标注值随图元变化自动更新。' +
-      '所有坐标与尺寸使用【米】。线性/对齐/角度需要 2~3 个点,半径/直径需要 1 个点。',
+      '所有坐标与尺寸使用【米】。线性/对齐需要 2 个点,角度需要 3 个点(顶点和两条射线端点),半径需要 2 个点(圆心和圆周点),直径需要 2 个点(直径两端)。',
     parameters: {
       kind: {
         type: 'string',
@@ -23,7 +23,7 @@ export function createDimensionTool(deps: ToolDeps): ToolDefinition {
       points: {
         type: 'array',
         required: true,
-        description: '标注点集:linear/aligned 2 点,angular 3 点,radius/diameter 1 点',
+        description: '标注点集:linear/aligned 2 点,angular 3 点,radius 2 点(圆心+圆周点),diameter 2 点(直径两端)',
         items: { ...pointSchema, description: '标注点(米)' },
       },
       offset: { type: 'number', description: '尺寸线相对测量点的偏移(米),用于避免压线' },
