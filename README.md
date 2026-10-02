@@ -1,6 +1,6 @@
 # dsh-plugin-cad
 
-**简体中文** | [English](./README.md)
+[简体中文](./README.zh-CN.md) | **English**
 
 A [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/) plugin that lets an
 agent **operate a running AutoCAD session**: read layers and entities, draw, dimension, hatch,

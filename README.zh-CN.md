@@ -109,7 +109,7 @@ node --test --experimental-strip-types test/com-live.test.ts
 node --test --experimental-strip-types test/*.test.ts
 ```
 
-完整套件共 **38 项测试全部通过**,其中 5 项真机测试需要已授权、正在运行的 AutoCAD。
+完整套件共 **43 项测试**,其中 7 项真机测试需要已授权、正在运行的 AutoCAD,其余离线跑在仿真传输层上。
 
 ## 真机联调踩坑记录
 
@@ -126,6 +126,8 @@ node --test --experimental-strip-types test/*.test.ts
 - 赋给不存在的图层会抛异常;桥接会按需自动创建图层。
 - `cad_transform` 适用于 AutoCAD 能变换的任何图元类型,包括多段线和块;句柄失效时会在 `warnings` 里报告,而不是静默跳过。
 - `StartUndoMark` / `EndUndoMark` 在自动化 `Document` 上不存在,而在自动化客户端里调用 `SendCommand` 会死锁。因此 `cad_draw` 的 `undoLabel` **被接受但不生效**;每个图元仍可用 `U` 单独撤销。
+- **`Hatch.AppendOuterLoop` / `AppendInnerLoop` 在 AutoCAD 2026 上经 COM 完全不可用。** .NET 客户端能构造出的每一种数组形态 —— `New-Object object[] 1`、`[object[]]::new(1)`、`[Array]::CreateInstance`、`@($poly)`、`ArrayList`、嵌套数组、裸 COM 对象、`[ref]`、`VariantWrapper`、`IUnknown` 往返、`InvokeMember`,甚至由 C# 辅助类在内部组数组 —— 全部被拒,报 *「对象数组无效」*。对 AutoCAD 自己用 `BHATCH` 建出来的 hatch(`NumberOfLoops=1`)调同一个方法同样失败,`InsertLoopAt` 也一样,所以这是服务端限制而非封送写法问题:RCW 需要的是只有对应版本 PIA 才能声明的 `AcadEntity[]`。因此 `cad_add_hatch` 改为绘制真实的闭合多段线,再通过 `SendCommand` 驱动 AutoCAD 自己的 `-HATCH` 命令,最后删除构造用几何。两个必须记住的后果:图案必须在命令执行**之前**用 **`HPNAME` / `HPSCALE` 系统变量**设置(事后给已有 hatch 赋 `PatternName` 会抛 *「找不到名称为 PatternName 的属性(参数数量为 1)」*),并且每次调用都要以 100ms 粒度轮询等待命令结算。
+- **尺寸标注的种类识别必须匹配派生类名。** AutoCAD 返回的是 `AcDbRotatedDimension`、`AcDbAlignedDimension`、`AcDb2LineAngularDimension`、`AcDbRadialDimension`、`AcDbDiametricDimension`,而不是基类 `AcDbDimension`,所以分类器按 `^AcDb[A-Za-z]*Dimension$` 族匹配(hatch 同理)。
 - `assets/cad-bridge.ps1` 必须保持 **UTF-8 with BOM**。否则 Windows PowerShell 5.1 会按 ANSI 读取中文字符串并解析失败。
 
 ## 开发
