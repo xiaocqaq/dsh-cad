@@ -2,7 +2,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import type { CadTransport } from './protocol.ts'
 import { CadService } from './service.ts'
+import { AutoTransport } from './transport/auto.ts'
 import { ComTransport } from './transport/com.ts'
+import { LispIpcTransport } from './transport/lisp-ipc.ts'
 import { SimulationTransport } from './transport/simulation.ts'
 import { createStatusTool, type ToolDeps } from './tools/cad-status.ts'
 import { createListLayersTool } from './tools/cad-layers.ts'
@@ -18,8 +20,14 @@ export const name = 'dsh-plugin-cad'
 export const inject = ['tools']
 
 export interface Config {
-  /** Backend: 'com' drives real AutoCAD; 'simulation' runs in memory. */
-  transport: 'com' | 'simulation'
+  /**
+   * `auto` prefers the resident AutoLISP dispatcher and uses COM only to load
+   * it, or when that load does not take. `lisp` never falls back. `com` is the
+   * previous path. `simulation` runs in memory.
+   */
+  transport: 'auto' | 'lisp' | 'com' | 'simulation'
+  /** File-IPC directory. Empty uses %LOCALAPPDATA%\\dsh-cad\\ipc. */
+  ipcDir: string
   /** Primary COM ProgID; probed first. */
   progId: string
   /** Additional ProgIDs to try when the primary is not registered. */
@@ -31,7 +39,8 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  transport: Schema.union(['com', 'simulation']).default('com'),
+  transport: Schema.union(['auto', 'lisp', 'com', 'simulation']).default('auto'),
+  ipcDir: Schema.string().default(''),
   progId: Schema.string().default('AutoCAD.Application'),
   progIdFallbacks: Schema.array(Schema.string()).default([
     'AutoCAD.Application.25.2',
@@ -47,11 +56,18 @@ export const Config: Schema<Config> = Schema.object({
 
 function createTransport(config: Config): CadTransport {
   if (config.transport === 'simulation') return new SimulationTransport()
-  return new ComTransport({
+  const comOpts = {
     progId: config.progId,
     progIdFallbacks: config.progIdFallbacks,
     requestTimeoutMs: config.requestTimeoutMs,
+  }
+  if (config.transport === 'com') return new ComTransport(comOpts)
+  const lisp = new LispIpcTransport({
+    ipcDir: config.ipcDir || undefined,
+    requestTimeoutMs: config.requestTimeoutMs,
   })
+  if (config.transport === 'lisp') return lisp
+  return new AutoTransport({ lisp, createCom: () => new ComTransport(comOpts) })
 }
 
 export function apply(ctx: Context, config: Config): void {

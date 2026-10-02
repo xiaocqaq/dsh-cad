@@ -22,7 +22,7 @@ export function createStatusTool(deps: ToolDeps): ToolDefinition {
         type: 'object',
         additionalProperties: false,
         properties: {
-          backend: { type: 'string', description: '后端类型: com 或 simulation' },
+          backend: { type: 'string', description: '后端类型: lisp-ipc、com 或 simulation' },
           connected: { type: 'boolean', description: '是否已成功连接' },
           unitsPerMeter: { type: 'number', description: '每米对应的图纸单位数' },
           document: {
@@ -52,12 +52,30 @@ export function createStatusTool(deps: ToolDeps): ToolDefinition {
               running: { type: 'boolean', description: '桥接子进程是否存活' },
             },
           },
+          ipc: {
+            type: 'object',
+            additionalProperties: false,
+            description: 'File IPC 调度器诊断。fresh 为 false 时需要 APPLOAD assets/cad-ipc.lsp。',
+            properties: {
+              dir: { type: 'string' },
+              fresh: { type: 'boolean' },
+              ageMs: { type: 'integer' },
+              version: { type: 'string' },
+              script: { type: 'string' },
+            },
+          },
+          degraded: { type: 'string', description: '能力降级原因；空表示没有降级' },
           message: { type: 'string', description: '未连接或出错时的说明' },
         },
       },
       render: (_args, value) => {
         if (!value.connected) {
-          return [{ type: 'text', text: `CAD 未连接(${value.backend}): ${value.message ?? '未知原因'}` }]
+          const extra = [
+            value.message ?? '未知原因',
+            value.degraded ? `降级: ${value.degraded}` : '',
+            value.ipc?.script ? `调度器: ${value.ipc.script}` : '',
+          ].filter(Boolean)
+          return [{ type: 'text', text: `CAD 未连接(${value.backend}): ${extra.join('\n')}` }]
         }
         const d = value.document
         const lines = [
@@ -80,6 +98,13 @@ export function createStatusTool(deps: ToolDeps): ToolDefinition {
             `桥接版本: ${b.loadedAt || '(未运行)'}${b.running ? '' : ' [进程未运行]'}`,
           )
         }
+        if (value.ipc?.dir) {
+          lines.push(
+            `IPC 目录: ${value.ipc.dir}`,
+            `调度器: ${value.ipc.fresh ? '在运行' : '未运行'} ${value.ipc.script || ''}`.trim(),
+          )
+        }
+        if (value.degraded) lines.push(`降级: ${value.degraded}`)
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
@@ -92,6 +117,16 @@ export function createStatusTool(deps: ToolDeps): ToolDefinition {
         loadedAt: diag.bridgeLoadedAt ? String(diag.bridgeLoadedAt) : '',
         running: Boolean(diag.bridgeRunning),
       }
+      const ipc = diag.ipcDir
+        ? {
+            dir: String(diag.ipcDir),
+            fresh: Boolean(diag.ipcFresh),
+            ageMs: Number(diag.ipcAgeMs ?? -1),
+            version: String(diag.ipcVersion ?? ''),
+            script: String(diag.dispatcherScript ?? ''),
+          }
+        : undefined
+      const degraded = diag.degraded ? String(diag.degraded) : undefined
       const res = await deps.cad.raw({ op: 'status' })
       if (!res.ok) {
         return {
@@ -99,6 +134,8 @@ export function createStatusTool(deps: ToolDeps): ToolDefinition {
           connected: false,
           unitsPerMeter: deps.unitsPerMeter,
           bridge,
+          ...(ipc ? { ipc } : {}),
+          ...(degraded ? { degraded } : {}),
           message: res.error.message,
         }
       }
@@ -118,6 +155,8 @@ export function createStatusTool(deps: ToolDeps): ToolDefinition {
         unitsPerMeter: deps.unitsPerMeter,
         document,
         bridge,
+        ...(ipc ? { ipc } : {}),
+        ...(degraded ? { degraded } : {}),
       }
     },
   })

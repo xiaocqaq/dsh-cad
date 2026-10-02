@@ -39,7 +39,7 @@ test('构建产物可被导入并导出插件入口', async () => {
 test('配置: 缺省输入会填充默认值', async () => {
   const mod = await loadPlugin()
   const cfg = mod.Config({}) as Record<string, unknown>
-  assert.equal(cfg.transport, 'com')
+  assert.equal(cfg.transport, 'auto')
   assert.equal(cfg.progId, 'AutoCAD.Application')
   assert.equal(cfg.unitsPerMeter, 1)
   assert.equal(cfg.requestTimeoutMs, 120000)
