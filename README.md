@@ -169,15 +169,16 @@ These were all found by running against AutoCAD 2026 and are worth knowing befor
 ## Development
 
 ```sh
-pnpm install       # also builds via the `prepare` script (needed for git installs)
+pnpm install
 pnpm typecheck
 pnpm build
 pnpm test
 ```
 
-`prepare` runs `tsdown`, so `dsh plugin add github:you/dsh-plugin-cad` works without a monorepo
-checkout. Add `allowBuilds: { dsh-plugin-cad: true }` to the profile''s `pnpm-workspace.yaml` to
-authorise that build step on first install.
+`lib/` is committed. A git install does not run a build script, so do not add
+`allowBuilds: { dsh-plugin-cad: true }`. pnpm 10 matches a git dependency only by its
+commit-pinned key, and that key changes on every push. After changing source, run
+`pnpm build` and commit `lib/` with it.
 
 ## Known limitations
 

@@ -133,14 +133,13 @@ node --test --experimental-strip-types test/*.test.ts
 ## 开发
 
 ```sh
-pnpm install       # 同时通过 `prepare` 脚本构建(git 安装时必需)
+pnpm install
 pnpm typecheck
 pnpm build
 pnpm test
 ```
 
-`prepare` 会执行 `tsdown`,所以 `dsh plugin add github:you/dsh-plugin-cad` 无需 monorepo 检出即可工作。
-首次安装时,需要在配置的 `pnpm-workspace.yaml` 里加入 `allowBuilds: { dsh-plugin-cad: true }` 来授权这一步构建。
+仓库已提交 `lib/`。git 安装不再执行构建脚本,因此不需要、也不要再往 `allowBuilds` 里加 `dsh-plugin-cad: true`。pnpm 10 对 git 依赖不认包名,只认带提交哈希的键,所以那一行永远放行不了下一次更新。改源码后先 `pnpm build`,再把 `lib/` 一起提交。
 
 ## 已知限制
 

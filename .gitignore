@@ -1,8 +1,7 @@
 # Dependencies
 node_modules/
 
-# Build output
-lib/
+# TypeScript incremental cache. lib/ is committed so git installs do not run a build.
 *.tsbuildinfo
 
 # AutoCAD lock/sidecar files — transient, never part of a source tree
